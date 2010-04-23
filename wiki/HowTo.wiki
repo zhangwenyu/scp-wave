@@ -8,6 +8,7 @@ lxb03, lxb04...etc to lxb20 as root user and using the verbose output. Two hosts
 
 = Details =
 
+{{{
 [root@lxb ~]# ./scpWave.py -v -u root /tmp/test10M /tmp/test10M -r lxb[03-20]
 transferring /tmp/test10M to 18 host(s)...
 root@lxb.cern.ch:/tmp/test10M -> root@lxb04:/tmp/test10M...  success
@@ -36,5 +37,7 @@ root@lxb06:/tmp/test10M -> root@lxb16:/tmp/test10M...  success
 received by: 14 hosts
 file_size: 10MB    
 elapsed time: 9.32s
+}}}
+
 
 We see 3 failed transfer to hosts lxb19 and lxb17, which is normal since these hosts are off-line
