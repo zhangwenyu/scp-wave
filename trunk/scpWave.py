@@ -331,29 +331,20 @@ def main():
                 basehost = arg.split("[")[0]
                 # get 3 part ranges eg: ["1-3","5-5"]
                 ranges = arg.split("[")[1].strip("[]").split(",")
-                minLeadZeroCount = 0
-                leadZeroCounts = []
                 splitRanges = []
                 for rng in ranges:
                     first = rng.split("-")[0]
                     last = rng.split("-")[1]
                     splitRanges.append((first, last))
-                    leadZeroCounts.append(len(re.search("0*(?=.*)", first).group(0)))
-                    leadZeroCounts.append(len(re.search("0*(?=.*)", last).group(0)))
-
-                if leadZeroCounts: 
-                    minLeadZeroCount = min(leadZeroCounts)
-                    basehost = basehost + "0" * minLeadZeroCount
-                    for first, last in splitRanges:
-                        first = first[minLeadZeroCount:]
-                        last = last[minLeadZeroCount:]
-
+            
                 for first, last in splitRanges:
                     for num in range(int(first), int(last)+1):
-                        host = basehost + str(num)
+                        leadingZeros = len(first) - len(str(num))
+                        host = basehost + "0"*leadingZeros + str(num)
                         targetList.append((host, filedest))
             except:
                 print "ERROR: Invalid argument for -r:", arg
+                print sys.exc_info()[1]
                 sys.exit(1)
         elif opt == '-l': # list
             # quote multiple hosts
