@@ -63,6 +63,7 @@ THE SOFTWARE.
 #   Use -s switch to turn on logging
 #
 # COMMAND - the command this script will use to transfer files
+#  For better performance, try '-c blowfish'
 #  Fill CMD_TEMPLATE with the seeder and target host data from seedq and targetq.
 #    CMD_TEMPLATE = "ssh -o StrictHostKeyChecking=no user@host1 scp -o\
 #    StrictHostKeyChecking=no/file user@host2:/file"
@@ -91,7 +92,7 @@ LOG_FILE = "transfers.log"
 USAGE = "usage: %s <file> <filedest> [-f <hostfile>] \
 [-l '<host1> <host2> ...'] [-r 'basehost[0-1,4-6,...]']"
 
-# maximum number of transfers
+# maximum number of concurrent transfers
 THREAD_MAX = 100
 
 # maximum attempts to try and transfer the file to a host
@@ -115,7 +116,7 @@ def printToTerminal(mesg):
         print mesg
         print_lock.release()
 
-# tries to mimic python2.5+ Queue
+# mimics python2.5+ Queue
 class TargetQueue(Queue.Queue):
     def __init__(self):
         Queue.Queue.__init__(self)
