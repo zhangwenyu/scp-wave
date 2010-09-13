@@ -161,7 +161,7 @@ class TimeQueue(Queue.Queue):
 # sends file to a single host
 class Seeder(threading.Thread):
     def __init__(self, target, targetq, seeder, seedq, seeder_threads, sema,\
-                 timeq, pidList, haltFlag):
+                 timeq, maxTransferAttempts=MAX_TRANSFER_ATTEMPTS):
         threading.Thread.__init__(self)
         self.seeder = seeder
         self.seedq = seedq
@@ -170,18 +170,17 @@ class Seeder(threading.Thread):
         self.seeder_threads = seeder_threads
         self.sema = sema
         self.timeq = timeq
-        self.pidList = pidList
-        self.pid = None
-        self.haltFlag = haltFlag # type threading.Event()
+        self.maxTransferAttempts = maxTransferAttempts
+        
 
     def run(self):        
-        for attempts in range(MAX_TRANSFER_ATTEMPTS):
+        for attempts in range(self.maxTransferAttempts):
             self.command = CMD_TEMPLATE % (self.seeder[0], self.seeder[1],
                                            self.target[0], self.target[1])
             ret = self.sendFile()
             self.seedq.put(self.seeder) # reuse seeder
 
-            if ret or self.haltFlag.isSet():
+            if ret:
                 break # success, or halt request (ctrl-c)
             elif attempts < MAX_TRANSFER_ATTEMPTS:
                 self.seeder = self.seedq.get(block=True) # try a different seed
@@ -194,32 +193,37 @@ class Seeder(threading.Thread):
     def sendFile(self):
         info = "%s:%s -> %s:%s... " %\
                (self.seeder[0], self.seeder[1], self.target[0], self.target[1])
+        stderr = None
         try:
             #ret = call(self.command, shell=True, stdout=PIPE, stdin=PIPE)
             proc = Popen(self.command, shell=True, stdout=PIPE,\
                          stdin=PIPE, stderr=PIPE)
-            self.pid = proc.pid
-            self.pidList.append(self.pid) # store pid so we can kill it
+
+            stdout, stderr = proc.communicate()
             ret = proc.wait()
-            self.pidList.remove(self.pid)
+
             if ret == 0:
                 # success
-                printToTerminal(info + " success")
+                print info + 'success'
                 self.seedq.put(self.target) # use target as a seeder
                 self.timeq.put(len(self.seeder_threads))
                 return True
             else:
                 # same as below, dont raise
-                printToTerminal(info + " failed")
+                print info + ' failed'
+                print stderr
                 return False
-        except:
+        # should probably let a keyboardinterrupt go by
+            # catch popen exception which is called...?
+        except Exception:
             # put back on queue to try again.
-            printToTerminal(info + " failed")
-            return False
+            print 'Popen error'
+            print info + ' failed'
+            if stderr: print stderr
+            #return False
 
 # called from main(), creates threads to do the file transfers
-def startTransfers(seedq, targetq, timeq, filepath, filedest, username,\
-                   pidList, haltFlag):
+def startTransfers(seedq, targetq, timeq, filepath, filedest, username,):
     # seedq takes a tuple of ([user@]host, filepath)
     # add first machine to seedq
     if username:
@@ -237,7 +241,7 @@ def startTransfers(seedq, targetq, timeq, filepath, filedest, username,\
     while True:
         try:
             target = targetq.get_nowait()
-        except:
+        except Exception:
             break # final transfers in progress
 
         # don't start thread until a seed is available
@@ -245,11 +249,9 @@ def startTransfers(seedq, targetq, timeq, filepath, filedest, username,\
         seeder = seedq.get(block=True)
         try:
             seederThread = Seeder(target, targetq, seeder, seedq, seeder_threads,\
-                                  sema, timeq, pidList, haltFlag)
+                                  sema, timeq)
             seeder_threads.append(seederThread)
             seederThread.start()
-        except KeyboardInterrupt:
-            raise
         except Exception:
             print "ERROR: Thread creation failed. Trying again in 5s\n",\
                   sys.exc_info()[1]
@@ -261,7 +263,7 @@ def startTransfers(seedq, targetq, timeq, filepath, filedest, username,\
     # wait for all targets to receive the file
     #targetq.join()
     while len(seeder_threads) > 0:
-        time.sleep(1.0)
+        time.sleep(0.5)
 
 def main():
     global VERBOSE_OUTPUT_ENABLED
@@ -272,9 +274,6 @@ def main():
     # targetq holds addresses of machines that need the file
     # Each element is a tuple of the form ([user@]host, filedest)
     targetq = TargetQueue()
-
-    # list of sub process PID's
-    pidList = []
 
     # set logging to default
     logging_enabled = LOGGING_ENABLED
@@ -380,36 +379,17 @@ def main():
     # see TimeQueue definition above for more info
     timeq = TimeQueue(start_time)
 
-    # used to tell threads to exit
-    haltFlag = threading.Event()
-
-    try:
-        # returns when all transfers are complete or exception
-        startTransfers(seedq, targetq, timeq, filepath, filedest, username,\
-                       pidList, haltFlag)
-    except KeyboardInterrupt: # catches ctrl-c
-        haltFlag.set() # tell threads to exit
-        print "Caught ctrl-c. Exiting"
-
-        pids = [pid for pid in pidList] # make a deep copy
-
-        for pid in pids: # I don't know about this one...
-            try:
-                ret = call("kill -9 %d" % pid, shell=True, stdin=PIPE,\
-                           stdout=PIPE, stderr=PIPE)
-            except:
-                print sys.exc_info()[1]
-                continue
-        os._exit(2)
+    # returns when all transfers are complete or exception
+    startTransfers(seedq, targetq, timeq, filepath, filedest, username)
 
     # transfers are complete, print out the stats
     elapsed_time = time.time() - start_time
     file_size = os.path.getsize(filepath) / (10**6) # file size in MB
-    files_received = seedq.qsize() - 1 # -1 for first seed
 
-    stats = "\nreceived by: %d hosts\nfile_size: %dMB\
-    \nelapsed time: %.2fs" % (files_received, file_size, elapsed_time)
-    print stats
+    # received by is not accurate ...
+    print 'received by: %d hosts' % (seedq.qsize()-1)
+    print 'file size: %dMB' % file_size
+    print 'elapsed time: %.2fs' % elapsed_time
 
     # create log file
     # use -s switch to turn on or off
@@ -426,12 +406,6 @@ def main():
         logfile.write("\n\n")
         logfile.close()
 
-class NullStream:
-    def write(self, s):
-        pass
-    
 if __name__ == "__main__":
     main()
-    # can uncomment this line if the script still creates output after
-    #  a keyboard interrupt
-    #sys.stdout = sys.stderr = NullStream()
+
