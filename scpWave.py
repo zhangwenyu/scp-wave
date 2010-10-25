@@ -93,7 +93,7 @@ USAGE = "usage: %s <file> <filedest> [-f <hostfile>] \
 [-l '<host1> <host2> ...'] [-r 'basehost[0-1,4-6,...]']"
 
 # maximum number of concurrent transfers
-THREAD_MAX = 150
+THREAD_MAX = 250
 
 # maximum attempts to try and transfer the file to a host
 MAX_TRANSFER_ATTEMPTS = 3
