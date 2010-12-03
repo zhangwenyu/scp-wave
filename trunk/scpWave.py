@@ -1,7 +1,9 @@
 #!/usr/bin/env python
-
-
 '''
+scpWave.py - binary tree distribution of files to hosts on a cluster using
+             scp utility.
+
+===============
 The MIT License
 
 Copyright (c) 2010 Clemson University
@@ -76,10 +78,19 @@ THE SOFTWARE.
 #     A thread will continue to try transferring after ctrl-c
 #     setting max_transfer_attempts to 1 seems to work
 #
-#  
+# TODO
+#  1. try 'ssh <host> exit' if transfer fails to see if host is up   
+#  2. 'received by: n hosts' doesn't print right at end
 #
 
-import Queue, sys, os, threading, time, thread, getopt, re
+import Queue
+import sys
+import os
+import threading
+import time
+import thread
+import getopt
+import re
 from socket import gethostname
 from subprocess import Popen, PIPE, call
 
@@ -87,10 +98,7 @@ from subprocess import Popen, PIPE, call
 
 # turn transfer logging on or off using -s switch
 LOGGING_ENABLED = False
-LOG_FILE = "transfers.log"
-
-USAGE = "usage: %s <file> <filedest> [-f <hostfile>] \
-[-l '<host1> <host2> ...'] [-r 'basehost[0-1,4-6,...]']"
+LOG_FILE = "scpWave.log"
 
 # maximum number of concurrent transfers
 THREAD_MAX = 250
@@ -107,14 +115,11 @@ StrictHostKeyChecking=no %s %s:%s"
 
 ### End global data ########################
 
+def _usage():
+    print '''\
+usage: scpWave.py <file> <filedest> [-f <hostfile>] \
+[-l '<host1> <host2> ...'] [-r 'basehost[0-1,4-6,...]']'''
 
-# threads use this to print to stdout
-print_lock = threading.Lock() # ensures thread safe printing
-def printToTerminal(mesg):
-    if VERBOSE_OUTPUT_ENABLED:
-        print_lock.acquire()
-        print mesg
-        print_lock.release()
 
 # mimics python2.5+ Queue
 class TargetQueue(Queue.Queue):
@@ -140,9 +145,11 @@ class TargetQueue(Queue.Queue):
             self.done.set()
         self.lock.release()
 
-# contains timing data. Holds entrees of the form:
-#  elapsed time, active seeds, transfers complete
+
 class TimeQueue(Queue.Queue):
+    ''' contains timing data. Holds entrees of the form:
+    elapsed time, active seeds, transfers complete '''
+
     def __init__(self, starttime):
         Queue.Queue.__init__(self)
         self.starttime = starttime
@@ -158,10 +165,13 @@ class TimeQueue(Queue.Queue):
                         (etime, activeSeeds, self.count))
         self.lock.release()
 
-# sends file to a single host
+
 class Seeder(threading.Thread):
+    ''' sends file to a single host '''
+
     def __init__(self, target, targetq, seeder, seedq, seeder_threads, sema,\
-                 timeq, maxTransferAttempts=MAX_TRANSFER_ATTEMPTS):
+                 timeq, maxTransferAttempts=MAX_TRANSFER_ATTEMPTS, 
+                 cmd_template=CMD_TEMPLATE):
         threading.Thread.__init__(self)
         self.seeder = seeder
         self.seedq = seedq
@@ -170,35 +180,37 @@ class Seeder(threading.Thread):
         self.seeder_threads = seeder_threads
         self.sema = sema
         self.timeq = timeq
-        self.maxTransferAttempts = maxTransferAttempts
-        
+        self.maxTransferAttempts = maxTransferAttempts        
+        self.cmd_template = cmd_template
 
-    def run(self):        
+    def run(self):
+        '''
+        instead of maxTransferAttempts, try to ssh to target and seed, see
+        which is the problem.
+        '''
         for attempts in range(self.maxTransferAttempts):
-            self.command = CMD_TEMPLATE % (self.seeder[0], self.seeder[1],
-                                           self.target[0], self.target[1])
+            self.command = self.cmd_template % (self.seeder[0], self.seeder[1],
+                                                self.target[0], self.target[1])
             ret = self.sendFile()
             self.seedq.put(self.seeder) # reuse seeder
 
             if ret:
                 break # success, or halt request (ctrl-c)
-            elif attempts < MAX_TRANSFER_ATTEMPTS:
+            elif attempts < self.maxTransferAttempts:
                 self.seeder = self.seedq.get(block=True) # try a different seed
 
         self.seeder_threads.remove(self) # remove from active threads
         self.targetq.task_done() # transfer still may not have succeeded
         self.sema.release()
             
-    # return True on success, False on failure. 
     def sendFile(self):
+        ''' return True on success, False on failure.'''
         info = "%s:%s -> %s:%s... " %\
                (self.seeder[0], self.seeder[1], self.target[0], self.target[1])
         stderr = None
         try:
-            #ret = call(self.command, shell=True, stdout=PIPE, stdin=PIPE)
             proc = Popen(self.command, shell=True, stdout=PIPE,\
                          stdin=PIPE, stderr=PIPE)
-
             stdout, stderr = proc.communicate()
             ret = proc.wait()
 
@@ -213,25 +225,31 @@ class Seeder(threading.Thread):
                 print info + ' failed'
                 print stderr
                 return False
-        # should probably let a keyboardinterrupt go by
-            # catch popen exception which is called...?
         except Exception:
             # put back on queue to try again.
             print 'Popen error'
             print info + ' failed'
             if stderr: print stderr
-            #return False
+            return False
 
-# called from main(), creates threads to do the file transfers
-def startTransfers(seedq, targetq, timeq, filepath, filedest, username,):
-    # seedq takes a tuple of ([user@]host, filepath)
-    # add first machine to seedq
+
+def isAlive(host, cmd='ssh -o StrictHostKeyChecking=no %s exit'):
+    ''' check if host is accepting ssh connections '''
+    p = Popen(cmd % host, shell=True)
+    ret = p.wait()
+    return not ret
+
+
+def startTransfers(seedq, targetq, timeq, filepath, filedest, username):
+    ''' called from main(), creates threads to do the file transfers.
+    seedq takes a tuple of ([user@]host, filepath)
+    add first machine to seedq '''
     if username:
         seedq.put(("%s@%s" % (username, gethostname()), filepath))
     else:
         seedq.put((gethostname(), filepath))
         
-    # initilize thread list
+    # initialize thread list
     seeder_threads = []
 
     # limits number of threads to THREAD_MAX
@@ -261,11 +279,11 @@ def startTransfers(seedq, targetq, timeq, filepath, filedest, username,):
             time.sleep(5.0)
             
     # wait for all targets to receive the file
-    #targetq.join()
-    while len(seeder_threads) > 0:
+    while seeder_threads != []:
         time.sleep(0.5)
 
-def main():
+
+def main(logfile=LOG_FILE, logging_enabled=LOGGING_ENABLED, username=None):
     global VERBOSE_OUTPUT_ENABLED
     # seedq holds addresses of machines containing the file
     # Each element is a tuple of the form ([user@]host, file)
@@ -275,15 +293,7 @@ def main():
     # Each element is a tuple of the form ([user@]host, filedest)
     targetq = TargetQueue()
 
-    # set logging to default
-    logging_enabled = LOGGING_ENABLED
-
     # You can use -u to specify a username
-    username = None
-
-    # script usage
-    usage = USAGE % sys.argv[0]
-
     try:
         optlist, args = getopt.gnu_getopt(sys.argv[1:], "u:f:r:l:sv")
     except:
@@ -292,7 +302,7 @@ def main():
 
     if len(args) < 2:
         print "ERROR: Must specify a file and a file destination"
-        print usage
+        _usage()
         sys.exit(1)
 
     # get name of file to transfer
@@ -300,11 +310,8 @@ def main():
         filename = args[0]
         filepath = os.path.realpath(filename)
         filedest = args[1]
-        #if filedest[0] != '/':
-        #    print "Specify a full path for filedest"
-        #    sys.exit(1)    
     except:
-        print usage
+        _usage()
         sys.exit(1)
 
     if not os.path.isfile(filepath):
@@ -369,7 +376,7 @@ def main():
     # ensure there are target hosts in the queue
     if targetq.qsize() < 1:
         print "There are no targets in the queue"
-        print usage
+        _usage()
         sys.exit(1)
         
     # ready to start the transfers
@@ -387,7 +394,7 @@ def main():
     file_size = os.path.getsize(filepath) / (10**6) # file size in MB
 
     # received by is not accurate ...
-    print 'received by: %d hosts' % (seedq.qsize()-1)
+    #print 'received by: %d hosts' % (seedq.qsize()-1)
     print 'file size: %dMB' % file_size
     print 'elapsed time: %.2fs' % elapsed_time
 
@@ -395,10 +402,10 @@ def main():
     # use -s switch to turn on or off
     if logging_enabled:
         header = time.ctime() + "\n"
-        if not os.path.exists(LOG_FILE):
+        if not os.path.exists(logfile):
             header = "Columns: [Elapsed Time(s)] [Active Seeds] " +\
             "[Files Transferred]\n\n" + header
-        logfile = open(LOG_FILE, "a")
+        logfile = open(logfile, "a")
         logfile.write(header)
         while timeq.qsize() > 0:
             string = timeq.get()
@@ -408,4 +415,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
